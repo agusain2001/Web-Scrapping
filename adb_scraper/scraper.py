@@ -331,11 +331,21 @@ class ADBProjectScraper:
         current_page = start_page
         pages_scraped = 0
         next_url = None
+        seen_project_ids = set()  # Track seen projects to detect duplicates
+        consecutive_empty = 0  # Track consecutive pages with no new projects
+        
+        # Hard limit to prevent infinite loops with pagination fallback
+        MAX_ABSOLUTE_PAGES = 1000
         
         while True:
             # Check page limit
             if max_pages and pages_scraped >= max_pages:
                 logger.info(f"Reached max pages limit ({max_pages})")
+                break
+            
+            # Safety net: absolute maximum pages
+            if pages_scraped >= MAX_ABSOLUTE_PAGES:
+                logger.warning(f"Reached absolute page limit ({MAX_ABSOLUTE_PAGES}), stopping")
                 break
             
             # Determine URL for this page
@@ -354,8 +364,27 @@ class ADBProjectScraper:
                     logger.info("No more projects found, stopping")
                     break
                 
-                # Yield each project
+                # Filter out duplicates and count new projects
+                new_projects = []
                 for project in projects:
+                    if project.project_id not in seen_project_ids:
+                        seen_project_ids.add(project.project_id)
+                        new_projects.append(project)
+                
+                # Check if we're getting duplicates (indicates we've looped back)
+                if not new_projects:
+                    consecutive_empty += 1
+                    logger.warning(f"Page {current_page}: All {len(projects)} projects are duplicates")
+                    
+                    if consecutive_empty >= 2:
+                        logger.info("Two consecutive pages with no new projects, stopping")
+                        break
+                else:
+                    consecutive_empty = 0
+                    logger.debug(f"Page {current_page}: Found {len(new_projects)} new projects ({len(projects) - len(new_projects)} duplicates)")
+                
+                # Yield each new project
+                for project in new_projects:
                     if include_details:
                         try:
                             detail = self.scrape_project_detail(project)
@@ -369,8 +398,13 @@ class ADBProjectScraper:
                 pages_scraped += 1
                 current_page += 1
                 
-                # Check if there are more pages
-                if not next_url:
+                # Log pagination source
+                if next_url:
+                    if 'page=' in next_url:
+                        logger.debug(f"Next page URL (constructed): {next_url}")
+                    else:
+                        logger.debug(f"Next page URL (from HTML): {next_url}")
+                else:
                     logger.info("No more pages available")
                     break
                     

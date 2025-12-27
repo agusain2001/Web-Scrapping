@@ -193,12 +193,37 @@ class ListingPageParser:
         
         return None
     
+    def get_current_page(self) -> int:
+        """Extract current page number from URL.
+        
+        Returns:
+            Current page number (0-indexed as used by ADB)
+        """
+        if not self.url:
+            return 0
+        
+        from urllib.parse import urlparse, parse_qs
+        
+        parsed = urlparse(self.url)
+        params = parse_qs(parsed.query)
+        
+        # ADB uses 'page' parameter (0-indexed)
+        page_values = params.get('page', ['0'])
+        try:
+            return int(page_values[0])
+        except (ValueError, IndexError):
+            return 0
+    
     def get_next_page_url(self) -> Optional[str]:
         """Get the URL of the next page if available.
+        
+        First tries to find a "Next" link in the HTML.
+        Falls back to constructing URL from page parameter.
         
         Returns:
             Absolute URL of the next page or None
         """
+        # Strategy 1: Try to find next link in HTML
         next_link = self.soup.select_one(self.SELECTORS['pagination_next'])
         
         if next_link:
@@ -208,7 +233,59 @@ class ListingPageParser:
             elif href.startswith('http'):
                 return href
         
+        # Strategy 2: Construct URL from page parameter
+        # Only do this if we found projects on the current page
+        # (to avoid infinite pagination on empty results)
+        if self._has_projects_on_page():
+            return self._construct_next_page_url()
+        
         return None
+    
+    def _has_projects_on_page(self) -> bool:
+        """Check if the current page has any project items.
+        
+        Returns:
+            True if projects found, False otherwise
+        """
+        items = self._find_project_items()
+        return len(items) > 0
+    
+    def _construct_next_page_url(self) -> str:
+        """Construct the next page URL using query parameters.
+        
+        The ADB website uses ?page=N where N is 0-indexed.
+        
+        Returns:
+            URL for the next page
+        """
+        from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
+        
+        current_page = self.get_current_page()
+        next_page = current_page + 1
+        
+        # Parse current URL or use base projects URL
+        base_url = self.url if self.url else f"{BASE_URL}/projects"
+        parsed = urlparse(base_url)
+        
+        # Get existing query params and update page
+        params = parse_qs(parsed.query)
+        params['page'] = [str(next_page)]
+        
+        # Flatten single-value lists for cleaner URLs
+        flat_params = {k: v[0] if len(v) == 1 else v for k, v in params.items()}
+        
+        # Rebuild URL with new page parameter
+        new_query = urlencode(flat_params, doseq=True)
+        new_url = urlunparse((
+            parsed.scheme or 'https',
+            parsed.netloc or 'www.adb.org',
+            parsed.path or '/projects',
+            parsed.params,
+            new_query,
+            parsed.fragment
+        ))
+        
+        return new_url
     
     def has_more_pages(self) -> bool:
         """Check if there are more pages to scrape.
